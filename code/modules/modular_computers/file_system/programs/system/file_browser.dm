@@ -9,9 +9,10 @@
 	requires_ntnet = FALSE
 	available_on_ntnet = FALSE
 	undeletable = TRUE
-	nanomodule_path = /datum/nano_module/program/computer_filemanager
 	var/open_file
 	var/error
+	var/SQLquery
+	var/data[0]
 
 /datum/computer_file/program/filemanager/Topic(href, href_list)
 	if(..())
@@ -27,6 +28,32 @@
 			open_file = href_list["PRG_openfile"]
 		else
 			return
+	if(href_list["PRG_templateprint"])
+		. = TRUE
+		var/printid = sanitizeSQL(href_list["PRG_templateprint"])
+		establish_db_connection(dbcon)
+
+		if(!dbcon.IsConnected())
+			alert("Connection to the database lost. Aborting.")
+		if(!printid)
+			alert("Invalid query. Try again.")
+		var/DBQuery/query = dbcon.NewQuery("SELECT id, name, data FROM ss13_forms WHERE id=[printid]")
+		query.Execute()
+
+		while(query.NextRow())
+			var/id = query.item[1]
+			var/name = query.item[2]
+			var/data = query.item[3]
+			var/obj/item/computer_hardware/hard_drive/HDD = computer.hard_drive
+			var/datum/computer_file/data/F = new/datum/computer_file/data()
+
+			//Let's start the BB >> HTML conversion!
+
+			var/templatetext = html_encode(data)
+			F.filename = "NFC-[id] - [name]"
+			F.filetype = "TXT"
+			F.stored_data = templatetext
+			HDD.store_file(F)
 	if(href_list["PRG_newtextfile"])
 		. = TRUE
 		var/newname = sanitize(input(usr, "Enter file name or leave blank to cancel:", "File rename"))
@@ -215,30 +242,40 @@
 		else
 			return
 	if(.)
-		SSnanoui.update_uis(NM)
+		SSvueui.check_uis_for_change(NM)
+	
+/datum/computer_file/program/filemanager/ui_interact(mob/user)
+	var/datum/vueui/ui = SSvueui.get_open_ui(user, src) 
+	if (!ui)
+		ui = new /datum/vueui/modularcomputer(user, src, "mcomputer-system-filemanager", 575, 700, "NTOS File Manager")
+	ui.open()
 
-/datum/nano_module/program/computer_filemanager
-	name = "NTOS File Manager"
+/datum/computer_file/program/filemanager/vueui_transfer(oldobj)
+	SSvueui.transfer_uis(oldobj, src, "mcomputer-system-filemanager", 575, 700, "NTOS File Manager")
+	return TRUE
 
-/datum/nano_module/program/computer_filemanager/ui_interact(mob/user, ui_key = "main", var/datum/nanoui/ui = null, var/force_open = 1, var/datum/topic_state/state = default_state)
-	var/list/data = host.initial_data()
-	var/datum/computer_file/program/filemanager/PRG
-	//var/list/data = list("_PC" = program.get_header_data())
-	PRG = program
+/datum/computer_file/program/filemanager/vueui_data_change(var/list/data, user, var/datum/vueui/ui)
+	. = ..()
+	data = . || data || list()
+
+	var/headerdata = get_header_data(data["_PC"])
+	if(headerdata)
+		data["_PC"] = headerdata
+		. = data
 
 	var/obj/item/computer_hardware/hard_drive/HDD
 	var/obj/item/computer_hardware/hard_drive/portable/RHDD
-	if(PRG.error)
-		data["error"] = PRG.error
-	if(PRG.open_file)
+	if(error)
+		data["error"] =  error
+	if(open_file)
 		var/datum/computer_file/data/file
 		var/datum/computer_file/script/script
 
-		if(!PRG.computer || !PRG.computer.hard_drive)
+		if(!computer || !computer.hard_drive)
 			data["error"] = "I/O ERROR: Unable to access hard drive."
 		else
-			HDD = PRG.computer.hard_drive
-			file = HDD.find_file_by_name(PRG.open_file)
+			HDD = computer.hard_drive
+			file = HDD.find_file_by_name(open_file)
 			script = file
 			if(!istype(file))
 				if(!istype(script))
@@ -250,11 +287,11 @@
 				data["filedata"] = pencode2html(file.stored_data)
 				data["filename"] = "[file.filename].[file.filetype]"
 	else
-		if(!PRG.computer || !PRG.computer.hard_drive)
+		if(!computer || !computer.hard_drive)
 			data["error"] = "I/O ERROR: Unable to access hard drive."
 		else
-			HDD = PRG.computer.hard_drive
-			RHDD = PRG.computer.portable_drive
+			HDD = computer.hard_drive
+			RHDD = computer.portable_drive
 			var/list/files[0]
 			for(var/datum/computer_file/F in HDD.stored_files)
 				files.Add(list(list(
@@ -277,12 +314,24 @@
 						"encrypted" = !!F.password
 					)))
 				data["usbfiles"] = usbfiles
+	
+	if (1 == 1)
+		if (!establish_db_connection(dbcon))
+			data["sql_error"] = 1
+		else
+			if (!SQLquery)
+				SQLquery = "SELECT id, name, department FROM ss13_forms ORDER BY id"
 
-	ui = SSnanoui.try_update_ui(user, src, ui_key, ui, data, force_open)
-	if (!ui)
-		ui = new(user, src, ui_key, "file_manager.tmpl", "NTOS File Manager", 575, 700, state = state)
-		ui.auto_update_layout = TRUE
-		ui.set_initial_data(data)
-		ui.open()
+			var/DBQuery/query = dbcon.NewQuery(SQLquery)
+			query.Execute()
+
+			var/list/forms = list()
+			while (query.NextRow())
+				forms += list(list("id" = query.item[1], "name" = query.item[2], "department" = query.item[3]))
+
+			if (!forms.len)
+				data["sql_error"] = 1
+
+			data["forms"] = forms
 
 #undef MAX_TEXTFILE_LENGTH
